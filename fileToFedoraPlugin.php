@@ -31,22 +31,15 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         $valid_config = $valid_config && $this->config->exists('username');
         $valid_config = $valid_config && $this->config->exists('password');
 
-        $valid_source = $valid_config && ca_metadata_elements::getElementID($this->config->get('source_element_id'));
-        $valid_target = $valid_config && ca_metadata_elements::getElementID($this->config->get('target_element_id'));
-
         $errors = [];
         if (!$valid_config)
             array_push($errors, 'Invalid config - missing keys. Check config file.');
-        if (!$valid_source)
-            array_push($errors, 'Invalid element ID for source elements - specified element not found.');
-        if (!$valid_target)
-            array_push($errors, 'Invalid element ID for target elements - specified element not found.');
 
         return array(
             'description' => $this->getDescription(),
             'errors' => $errors,
             'warnings' => [],
-            'available' => $valid_config && $valid_source && $valid_target,
+            'available' => $valid_config,
         );
     }
 
