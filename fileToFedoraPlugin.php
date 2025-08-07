@@ -1,5 +1,6 @@
 <?php
 require_once(__CA_MODELS_DIR__.'/ca_attribute_values.php');
+require_once(__CA_MODELS_DIR__.'/ca_metadata_elements.php');
 require_once(__CA_LIB_DIR__."/Media.php");
 
 class fileToFedoraPlugin extends BaseApplicationPlugin {
@@ -22,11 +23,30 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
     }
 
     public function checkStatus() {
+        $valid_config = !$this->config->isError();
+        $valid_config = $valid_config && $this->config->exists('source_element_id');
+        $valid_config = $valid_config && $this->config->exists('target_element_id');
+        $valid_config = $valid_config && $this->config->exists('fedora_repo');
+        $valid_config = $valid_config && $this->config->exists('collection_path');
+        $valid_config = $valid_config && $this->config->exists('username');
+        $valid_config = $valid_config && $this->config->exists('password');
+
+        $valid_source = $valid_config && ca_metadata_elements::getElementID($this->config->get('source_element_id'));
+        $valid_target = $valid_config && ca_metadata_elements::getElementID($this->config->get('target_element_id'));
+
+        $errors = [];
+        if (!$valid_config)
+            array_push($errors, 'Invalid config - missing keys. Check config file.');
+        if (!$valid_source)
+            array_push($errors, 'Invalid element ID for source elements - specified element not found.');
+        if (!$valid_target)
+            array_push($errors, 'Invalid element ID for target elements - specified element not found.');
+
         return array(
             'description' => $this->getDescription(),
-            'errors' => [],
+            'errors' => $errors,
             'warnings' => [],
-            'available' => true,
+            'available' => $valid_config && $valid_source && $valid_target,
         );
     }
 
