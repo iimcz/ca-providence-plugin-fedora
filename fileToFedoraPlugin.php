@@ -62,8 +62,8 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         // Look through all the uploaded files to catch our source element/attribute value and upload it to Fedora.
         foreach ($file_attr as $elem_id => $files_key) {
             if ($elem_id === $source_element_id && $_FILES[$files_key]['error'] === UPLOAD_ERR_OK) {
+                // TODO: actually use the extracted metadata and save it somewhere (Fedora, maybe to CA as well?)
                 $metadata = fileToFedoraPlugin::_harvestMetadata($_FILES[$files_key]);
-                error_log(print_r($metadata, true));
 
                 $media_url = new FedoraUpload(
                     $this->config->get('fedora_repo'),
@@ -73,9 +73,6 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
                     $this->config->get('username'),
                     $this->config->get('password')
                 )->execute();
-                error_log(print_r($media_url == true, true));
-                error_log(print_r($media_url == false, true));
-                error_log(print_r($media_url === false, true));
 
                 // Clear the upload in any case, so the file does not get uploaded to the original attribute.
                 fileToFedoraPlugin::clearUpload($files_key);
