@@ -1,0 +1,29 @@
+{
+    "General": {
+        "Format": "ebucore:hasFormat",
+        "CodecID": "ebucore:hasContainerCodec",
+        "FileSize": "ebucore:fileSize",
+        "Duration": "ebucore:duration",
+        "OverallBitRate": "ebucore:bitRateOverall",
+        "FrameRate": "ebucore:frameRate",
+        "File_Modified_Date": "ebucore:dateModified"
+    },
+    "Video": {
+        "Format": "ebucore:hasVideoEncodingFormat",
+        "CodecID": "ebucore:hasVideoCodec",
+        "BitRate": "ebucore:videoBitRate",
+        "Width": "ebucore:width",
+        "Height": "ebucore:height",
+        "DisplayAspectRatio": "ebucore:aspectRatio",
+        "ColorSpace": "ebucore:hasColourSpace",
+        "BitDepth": "ebucore:bitDepth",
+        "ScanType": "ebucore:scanningFormat"
+    },
+    "Audio": {
+        "Format": "ebucore:hasAudioEncodingFormat",
+        "CodecID": "ebucore:hasAudioCodec",
+        "BitRate_Mode": "ebucore:audioBitRateMode",
+        "BitRate": "ebucore:audioBitRate",
+        "Channels": "ebucore:audioChannelNumber"
+    }
+}

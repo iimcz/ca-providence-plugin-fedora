@@ -9,6 +9,7 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
     public function __construct($plugin_path) {
         $this->description = _t('Modifies uploaded files by pushing them to a Fedora repository and replacing appropriate bundle attributes.');
 		$this->config = Configuration::load($plugin_path . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'fileToFedora.conf');
+        $this->ebucore_mapping = json_decode(file_get_contents($plugin_path . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'ebucore-mapping.json'), true);
 
 		parent::__construct();
     }
@@ -30,10 +31,21 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         $valid_config = $valid_config && $this->config->exists('collection_path');
         $valid_config = $valid_config && $this->config->exists('username');
         $valid_config = $valid_config && $this->config->exists('password');
+        $valid_config = $valid_config && $this->config->exists('file_size_element_id');
+        $valid_config = $valid_config && $this->config->exists('file_format_element_id');
+        $valid_config = $valid_config && $this->config->exists('file_hash_element_id');
+
 
         $errors = [];
         if (!$valid_config)
             array_push($errors, 'Invalid config - missing keys. Check config file.');
+
+
+        $mediainfo_path = caGetExternalApplicationPath('mediainfo');
+	    if (!caIsValidFilePath($mediainfo_path)) {
+            $valid_config = false;
+            array_push($errors, 'Mediainfo is not available - it is required to extract metadata.');    
+        }
 
         return array(
             'description' => $this->getDescription(),
@@ -44,7 +56,6 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
     }
 
     public function hookBeforeSaveItem(&$pa_params) {
-        error_log(print_r($_FILES, true));
         $va_request = $pa_params['request'];
         $va_instance =& $pa_params['instance'];
 
@@ -76,16 +87,22 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         foreach ($file_attr as $elem_id => $files_key) {
             if ($elem_id === $source_element_id && $_FILES[$files_key]['error'] === UPLOAD_ERR_OK) {
                 // TODO: actually use the extracted metadata and save it somewhere (Fedora, maybe to CA as well?)
-                $metadata = fileToFedoraPlugin::_harvestMetadata($_FILES[$files_key]);
+                $metadata = fileToFedoraPlugin::_harvestMetadata($_FILES[$files_key]['tmp_name']);
 
-                $media_url = new FedoraUpload(
+                $upload_obj = new FedoraUpload(
                     $this->config->get('fedora_repo'),
                     $this->config->get('collection_path'),
                     $_FILES[$files_key]['name'],
                     $_FILES[$files_key]['tmp_name'],
                     $this->config->get('username'),
                     $this->config->get('password')
-                )->execute();
+                );
+                $media_url = $upload_obj->execute_upload();
+
+                foreach ($metadata as $key => $value) {
+                    $upload_obj->add_metadata($key, $value);
+                }
+                $upload_obj->execute_update();
 
                 // Clear the upload in any case, so the file does not get uploaded to the original attribute.
                 fileToFedoraPlugin::clearUpload($files_key);
@@ -104,33 +121,103 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
                     $va_instance->replaceAttribute(array(
                         $target_element_id => $media_url
                     ), $target_element_id);
+
+                    // Also add harvested metadata to the configured attributes.
+                    $file_size_element_id = $this->config->get('file_size_element_id');
+                    if ($file_size_element_id > 0) {
+                        $va_instance->replaceAttribute(array(
+                            $file_size_element_id => $metadata['ebucore:fileSize']
+                        ), $file_size_element_id);
+                    }
+
+                    $file_format_element_id = $this->config->get('file_format_element_id');
+                    if ($file_format_element_id > 0) {
+                        $va_instance->replaceAttribute(array(
+                            $file_format_element_id => $metadata['ebucore:hasFormat']
+                        ), $file_format_element_id);
+                    }
+
+                    // TODO: also include a hash?
                 }
             }
         }
     }
 
-    protected static function _harvestMetadata($pa_file) {
-        $m = new Media();
+    protected function _harvestMetadata($pa_file) {
+        $mediainfo_path = caGetExternalApplicationPath('mediainfo');
+	    if (!caIsValidFilePath($mediainfo_path)) { return false; }
 
-        // TODO: Rename the temporary filename from upload for plugins like ImageMagick which partially rely on extensions to work properly.
-        $mimetype = $m->divineFileFormat($pa_file['tmp_name']);
-        if ($mimetype === false)
-            return false;
-        
-        if (!$m->read($pa_file['tmp_name'], null, ['original_filename' => $pa_file['name']]))
-            return false;
+        caExec($mediainfo_path." --output=JSON  ".caEscapeShellArg($pa_file), $va_output, $vn_return);
+        $va_output = implode("\n", $va_output);
 
-        return $m->getExtractedMetadata();
+        // Parse JSON
+        $metadata = json_decode($va_output, true);
+        if ($metadata === null) {
+            return false;
+        }
+        $metadata_tracks = $metadata['media']['track'];
+
+        $result = array();
+        foreach ($metadata_tracks as $track) {
+            if ($track['@type'] === 'Video') {
+                $track_mapping = $this->ebucore_mapping['Video'];
+            }
+            else if ($track['@type'] === 'Audio') {
+                $track_mapping = $this->ebucore_mapping['Audio'];
+            }
+            else {
+                // Assume General
+                $track_mapping = $this->ebucore_mapping['General'];
+            }
+
+            foreach ($track as $key => $value) {
+                if (array_key_exists($key, $track_mapping)) {
+                    $result[$track_mapping[$key]] = $value;
+                }
+            }
+        }
+
+        return $result;
     }
 }
 
 class FedoraUpload {
+    private static string $update_prefix = "PREFIX premis: <http://www.loc.gov/premis/rdf/v1#>
+PREFIX test: <info:fedora/test/>
+PREFIX memento: <http://mementoweb.org/ns#>
+PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+PREFIX webac: <http://fedora.info/definitions/v4/webac#>
+PREFIX acl: <http://www.w3.org/ns/auth/acl#>
+PREFIX vcard: <http://www.w3.org/2006/vcard/ns#>
+PREFIX xsi: <http://www.w3.org/2001/XMLSchema-instance>
+PREFIX xmlns: <http://www.w3.org/2000/xmlns/>
+PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
+PREFIX fedora: <http://fedora.info/definitions/v4/repository#>
+PREFIX xml: <http://www.w3.org/XML/1998/namespace>
+PREFIX ebucore: <http://www.ebu.ch/metadata/ontologies/ebucore/ebucore#>
+PREFIX ldp: <http://www.w3.org/ns/ldp#>
+PREFIX dcterms: <http://purl.org/dc/terms/>
+PREFIX iana: <http://www.iana.org/assignments/relation/>
+PREFIX xs: <http://www.w3.org/2001/XMLSchema>
+PREFIX fedoraconfig: <http://fedora.info/definitions/v4/config#>
+PREFIX foaf: <http://xmlns.com/foaf/0.1/>
+PREFIX dc: <http://purl.org/dc/elements/1.1/>
+
+DELETE { }
+INSERT {
+";
+    private static string $update_suffix = "
+}
+WHERE { }";
+
     private string $filename;
     private string $filepath;
     private string $repo_url;
     private string $collection_path;
     private string $username;
     private string $password;
+    private string $metadata;
+    private string $file_url;
 
     public function __construct($repo_url, $collection_path, $filename, $filepath, $username, $password) {
         $this->repo_url = $repo_url;
@@ -139,9 +226,15 @@ class FedoraUpload {
         $this->filepath = $filepath;
         $this->username = $username;
         $this->password = $password;
+        $this->metadata = "";
+        $this->file_url = "";
     }
 
-    public function execute(): string {
+    public function add_metadata($key, $value) {
+        $this->metadata .= " <> " . $key . " \"" . $value . "\".\n"; 
+    }
+
+    public function execute_upload(): string {
         $http_headers = [
             'Content-Type: ' . mime_content_type($this->filepath),
             'Content-Disposition: attachment; filename="' . quoted_printable_encode($this->filename) . '"'
@@ -158,10 +251,32 @@ class FedoraUpload {
         curl_setopt( $curl, CURLOPT_USERPWD, $this->username . ':' . $this->password);
         curl_setopt( $curl, CURLOPT_URL, $this->repo_url . $this->collection_path );
         curl_setopt( $curl, CURLOPT_RETURNTRANSFER, true );
-        $result = curl_exec($curl);
+        $this->file_url = $result = curl_exec($curl);
         curl_close($curl);
         fclose($in);
         return $result;
+    }
+
+    public function execute_update() {
+        if (!$this->file_url) {
+            return false;
+        }
+
+        $request = FedoraUpload::$update_prefix . $this->metadata . FedoraUpload::$update_suffix;
+
+        $curl = curl_init();
+        curl_setopt( $curl, CURLOPT_URL, $this->file_url . '/fcr:metadata' );
+        curl_setopt( $curl, CURLOPT_CUSTOMREQUEST, 'PATCH' );
+        curl_setopt( $curl, CURLOPT_HTTPHEADER, [
+            'Content-Type: application/sparql-update'
+        ]);
+        curl_setopt( $curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC );
+        curl_setopt( $curl, CURLOPT_USERPWD, $this->username . ':' . $this->password);
+        curl_setopt( $curl, CURLOPT_POSTFIELDS, $request );
+        curl_setopt( $curl, CURLOPT_RETURNTRANSFER, true );
+        $result = curl_exec($curl);
+        curl_close($curl);
+        return $result === null;
     }
 }
 ?>
