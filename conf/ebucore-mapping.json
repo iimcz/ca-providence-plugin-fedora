@@ -25,5 +25,16 @@
         "BitRate_Mode": "ebucore:audioBitRateMode",
         "BitRate": "ebucore:audioBitRate",
         "Channels": "ebucore:audioChannelNumber"
+    },
+    "Image": {
+        "Format": "ebucore:hasDataFormat",
+        "Width": "ebucore:width",
+        "Height": "ebucore:height",
+        "DisplayAspectRatio": "ebucore:aspectRatio",
+        "ColorSpace": "ebucore:hasColourSpace",
+        "BitDepth": "ebucore:bitDepth"
+    },
+    "Text": {
+        "Format": "ebucore:hasDocumentFormat"
     }
 }

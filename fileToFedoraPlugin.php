@@ -10,6 +10,8 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         $this->description = _t('Modifies uploaded files by pushing them to a Fedora repository and replacing appropriate bundle attributes.');
 		$this->config = Configuration::load($plugin_path . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'fileToFedora.conf');
         $this->ebucore_mapping = json_decode(file_get_contents($plugin_path . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'ebucore-mapping.json'), true);
+        $this->type_mapping = json_decode(file_get_contents($plugin_path . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'type-mapping.json'), true);
+        $this->format_mapping = json_decode(file_get_contents($plugin_path . DIRECTORY_SEPARATOR . 'conf' . DIRECTORY_SEPARATOR . 'format-mapping.json'), true);
 
 		parent::__construct();
     }
@@ -62,6 +64,13 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         $source_element_id = intval($this->config->get('source_element_id'));
         $target_element_id = intval($this->config->get('target_element_id'));
 
+        $file_name_element_id = intval($this->config->get('file_name_element_id'));
+        $file_type_element_id = intval($this->config->get('file_type_element_id'));
+        $file_format_element_id = intval($this->config->get('file_format_element_id'));
+        $file_size_element_id = intval($this->config->get('file_size_element_id'));
+        $file_quality_element_id = intval($this->config->get('file_quality_element_id'));
+        $file_hash_element_id = intval($this->config->get('file_hash_element_id'));
+
         $file_keys = array_keys($_FILES);
         $file_attr = [];
         foreach ($file_keys as $key) {
@@ -87,7 +96,7 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         foreach ($file_attr as $elem_id => $files_key) {
             if ($elem_id === $source_element_id && $_FILES[$files_key]['error'] === UPLOAD_ERR_OK) {
                 // TODO: actually use the extracted metadata and save it somewhere (Fedora, maybe to CA as well?)
-                $metadata = fileToFedoraPlugin::_harvestMetadata($_FILES[$files_key]['tmp_name']);
+                fileToFedoraPlugin::_harvestMetadata($_FILES[$files_key]['tmp_name'], $metadata, $file_type);
 
                 $upload_obj = new FedoraUpload(
                     $this->config->get('fedora_repo'),
@@ -104,8 +113,6 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
                 }
                 $upload_obj->execute_update();
 
-                // Clear the upload in any case, so the file does not get uploaded to the original attribute.
-                fileToFedoraPlugin::clearUpload($files_key);
 
                 if (!$media_url) {
                     // For now, we borrow the error code 1970 from the FileAttributeValue class.
@@ -123,27 +130,55 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
                     ), $target_element_id);
 
                     // Also add harvested metadata to the configured attributes.
-                    $file_size_element_id = $this->config->get('file_size_element_id');
-                    if ($file_size_element_id > 0) {
+                    if ($file_name_element_id > 0) {
+                        $va_instance->replaceAttribute(array(
+                            $file_name_element_id => $_FILES[$files_key]['name']
+                        ), $file_name_element_id);
+                    }
+
+                    if ($file_type_element_id > 0) {
+                        $ca_type = $file_type;
+                        if (array_key_exists($file_type, $this->type_mapping))
+                            $ca_type = $this->type_mapping[$file_type];
+                        else if (array_key_exists('Unknown', $this->type_mapping))
+                            $ca_type = $this->type_mapping['Unknown'];
+                        $va_instance->replaceAttribute(array(
+                            $file_type_element_id => $ca_type
+                        ), $file_type_element_id);
+                    }
+
+                    if ($file_format_element_id > 0 && array_key_exists('ebucore:hasFormat', $metadata)) {
+                        $ca_format = $metadata['ebucore:hasFormat'];
+                        if (array_key_exists($metadata['ebucore:hasFormat'], $this->format_mapping))
+                            $ca_format = $this->format_mapping[$metadata['ebucore:hasFormat']];
+                        else if (array_key_exists('Unknown', $this->format_mapping))
+                            $ca_format = $this->format_mapping['Unknown'];
+                        $va_instance->replaceAttribute(array(
+                            $file_format_element_id => $ca_format
+                        ), $file_format_element_id);
+                    }
+
+                    if ($file_size_element_id > 0 && array_key_exists('ebucore:fileSize', $metadata)) {
                         $va_instance->replaceAttribute(array(
                             $file_size_element_id => $metadata['ebucore:fileSize']
                         ), $file_size_element_id);
                     }
-
-                    $file_format_element_id = $this->config->get('file_format_element_id');
-                    if ($file_format_element_id > 0) {
+                    
+                    if ($file_quality_element_id > 0 && array_key_exists('ebucore:width', $metadata)) {
                         $va_instance->replaceAttribute(array(
-                            $file_format_element_id => $metadata['ebucore:hasFormat']
-                        ), $file_format_element_id);
+                            $file_quality_element_id => $metadata['ebucore:width'] . 'x' . $metadata['ebucore:height']
+                        ), $file_quality_element_id);
                     }
-
                     // TODO: also include a hash?
                 }
+
+                // Clear the upload in any case, so the file does not get uploaded to the original attribute.
+                fileToFedoraPlugin::clearUpload($files_key);
             }
         }
     }
 
-    protected function _harvestMetadata($pa_file) {
+    protected function _harvestMetadata($pa_file, &$result,  &$file_type) {
         $mediainfo_path = caGetExternalApplicationPath('mediainfo');
 	    if (!caIsValidFilePath($mediainfo_path)) { return false; }
 
@@ -157,17 +192,33 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
         }
         $metadata_tracks = $metadata['media']['track'];
 
+        $type_is_final = false;
+
         $result = array();
         foreach ($metadata_tracks as $track) {
             if ($track['@type'] === 'Video') {
                 $track_mapping = $this->ebucore_mapping['Video'];
+                $file_type = 'Video';
+                $type_is_final = true;
             }
             else if ($track['@type'] === 'Audio') {
                 $track_mapping = $this->ebucore_mapping['Audio'];
+                if (!$type_is_final) $file_type = 'Audio';
+            }
+            else if ($track['@type'] === 'Image') {
+                $track_mapping = $this->ebucore_mapping['Image'];
+                $file_type = 'Image';
+                $type_is_final = true;
+            }
+            else if ($track['@type'] === 'Text') {
+                $track_mapping = $this->ebucore_mapping['Text'];
+                $file_type = 'Text';
+                $type_is_final = true;
             }
             else {
                 // Assume General
                 $track_mapping = $this->ebucore_mapping['General'];
+                $file_type = 'Unknown'; // TODO: something else here?
             }
 
             foreach ($track as $key => $value) {
@@ -176,8 +227,6 @@ class fileToFedoraPlugin extends BaseApplicationPlugin {
                 }
             }
         }
-
-        return $result;
     }
 }
 
